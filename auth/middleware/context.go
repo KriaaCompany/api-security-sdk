@@ -5,7 +5,7 @@ package middleware
 import (
 	"context"
 
-	"github.com/krishna/api-security-sdk/auth/jwt"
+	"github.com/KriaaCompany/api-security-sdk/auth/jwt"
 )
 
 type contextKey struct{}

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/krishna/api-security-sdk/auth/jwt"
+	"github.com/KriaaCompany/api-security-sdk/auth/jwt"
 )
 
 // ErrorHandler is invoked when authentication fails. If not set, a default
