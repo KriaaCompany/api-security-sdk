@@ -18,6 +18,9 @@ type options struct {
 	expiry        time.Duration
 	issuer        string
 	blacklist     Blacklist
+	// keyFunc overrides signingMethod+verifyKey for verification.
+	// Set via WithJWKS for external identity providers (Auth0, Cognito, etc.).
+	keyFunc gojwt.Keyfunc
 }
 
 func defaultOptions() options {
@@ -105,4 +108,17 @@ func WithIssuer(issuer string) Option {
 // Revoked tokens are rejected during Verify.
 func WithBlacklist(bl Blacklist) Option {
 	return func(o *options) { o.blacklist = bl }
+}
+
+// WithJWKS configures the service to verify tokens using an external keyfunc
+// (e.g. from auth/jwks.Source.KeyFunc). When set, signingMethod and verifyKey
+// are not used during Verify — the keyfunc is called instead.
+//
+// Sign still requires a local signing method (WithHMAC, WithRSA, or WithECDSA).
+// Use WithJWKS for verify-only services backed by Auth0, Cognito, Google, etc.
+//
+//	src := jwks.Auth0("myapp.auth0.com")
+//	svc := jwt.New(jwt.WithJWKS(src.KeyFunc))
+func WithJWKS(kf gojwt.Keyfunc) Option {
+	return func(o *options) { o.keyFunc = kf }
 }
