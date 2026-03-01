@@ -14,10 +14,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/krishna/api-security-sdk/abac"
-	jwtpkg "github.com/krishna/api-security-sdk/auth/jwt"
-	authmw "github.com/krishna/api-security-sdk/auth/middleware"
-	"github.com/krishna/api-security-sdk/crypto"
+	"github.com/KriaaCompany/api-security-sdk/abac"
+	jwtpkg "github.com/KriaaCompany/api-security-sdk/auth/jwt"
+	authmw "github.com/KriaaCompany/api-security-sdk/auth/middleware"
+	"github.com/KriaaCompany/api-security-sdk/crypto"
 )
 
 func main() {

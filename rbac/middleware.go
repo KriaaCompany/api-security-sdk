@@ -3,7 +3,7 @@ package rbac
 import (
 	"net/http"
 
-	authmw "github.com/krishna/api-security-sdk/auth/middleware"
+	authmw "github.com/KriaaCompany/api-security-sdk/auth/middleware"
 )
 
 // Require returns HTTP middleware that enforces a single RBAC permission.

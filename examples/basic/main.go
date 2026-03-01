@@ -24,9 +24,9 @@ import (
 	"net/http"
 	"time"
 
-	jwtpkg "github.com/krishna/api-security-sdk/auth/jwt"
-	authmw "github.com/krishna/api-security-sdk/auth/middleware"
-	"github.com/krishna/api-security-sdk/rbac"
+	jwtpkg "github.com/KriaaCompany/api-security-sdk/auth/jwt"
+	authmw "github.com/KriaaCompany/api-security-sdk/auth/middleware"
+	"github.com/KriaaCompany/api-security-sdk/rbac"
 )
 
 func main() {

@@ -1,4 +1,4 @@
-module github.com/krishna/api-security-sdk
+module github.com/KriaaCompany/api-security-sdk
 
 go 1.22.0
 

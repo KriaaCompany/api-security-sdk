@@ -18,22 +18,22 @@ A secure, fast, and easy-to-integrate Go SDK for authentication and authorisatio
 ## Installation
 
 ```sh
-go get github.com/krishna/api-security-sdk
+go get github.com/KriaaCompany/api-security-sdk
 ```
 
 ## Packages
 
 | Import path | Purpose |
 |---|---|
-| `github.com/krishna/api-security-sdk/auth/jwt` | JWT service |
-| `github.com/krishna/api-security-sdk/auth/middleware` | HTTP auth middleware & context helpers |
-| `github.com/krishna/api-security-sdk/rbac` | Role-Based Access Control |
-| `github.com/krishna/api-security-sdk/abac` | Attribute-Based Access Control |
-| `github.com/krishna/api-security-sdk/otp` | TOTP two-factor authentication |
-| `github.com/krishna/api-security-sdk/apikey` | API key generation & authentication |
-| `github.com/krishna/api-security-sdk/ratelimit` | Sliding-window rate limiting |
-| `github.com/krishna/api-security-sdk/secureheaders` | Security response headers middleware |
-| `github.com/krishna/api-security-sdk/crypto` | Password hashing, tokens, key generation |
+| `github.com/KriaaCompany/api-security-sdk/auth/jwt` | JWT service |
+| `github.com/KriaaCompany/api-security-sdk/auth/middleware` | HTTP auth middleware & context helpers |
+| `github.com/KriaaCompany/api-security-sdk/rbac` | Role-Based Access Control |
+| `github.com/KriaaCompany/api-security-sdk/abac` | Attribute-Based Access Control |
+| `github.com/KriaaCompany/api-security-sdk/otp` | TOTP two-factor authentication |
+| `github.com/KriaaCompany/api-security-sdk/apikey` | API key generation & authentication |
+| `github.com/KriaaCompany/api-security-sdk/ratelimit` | Sliding-window rate limiting |
+| `github.com/KriaaCompany/api-security-sdk/secureheaders` | Security response headers middleware |
+| `github.com/KriaaCompany/api-security-sdk/crypto` | Password hashing, tokens, key generation |
 
 ---
 
@@ -42,7 +42,7 @@ go get github.com/krishna/api-security-sdk
 ### Setup
 
 ```go
-import jwtpkg "github.com/krishna/api-security-sdk/auth/jwt"
+import jwtpkg "github.com/KriaaCompany/api-security-sdk/auth/jwt"
 
 // HMAC (symmetric) — simplest option
 svc := jwtpkg.New(
@@ -113,7 +113,7 @@ Implement the `jwtpkg.Blacklist` interface to back revocation with Redis, a data
 ### Setup
 
 ```go
-import "github.com/krishna/api-security-sdk/rbac"
+import "github.com/KriaaCompany/api-security-sdk/rbac"
 
 store := rbac.NewMemoryStore()
 
@@ -159,8 +159,8 @@ err := enforcer.Enforce("bob", "delete", "users")
 
 ```go
 import (
-    authmw "github.com/krishna/api-security-sdk/auth/middleware"
-    "github.com/krishna/api-security-sdk/rbac"
+    authmw "github.com/KriaaCompany/api-security-sdk/auth/middleware"
+    "github.com/KriaaCompany/api-security-sdk/rbac"
 )
 
 mux.Handle("/posts",
@@ -190,7 +190,7 @@ ABAC evaluates structured policies against a request composed of subject, resour
 ### Setup
 
 ```go
-import "github.com/krishna/api-security-sdk/abac"
+import "github.com/KriaaCompany/api-security-sdk/abac"
 
 store := abac.NewMemoryStore()
 
@@ -308,7 +308,7 @@ RFC 6238 time-based one-time passwords, compatible with Google Authenticator, Au
 ### Setup flow
 
 ```go
-import "github.com/krishna/api-security-sdk/otp"
+import "github.com/KriaaCompany/api-security-sdk/otp"
 
 // 1. Generate a secret during account setup. Store it encrypted per user.
 secret, err := otp.NewSecret()
@@ -352,7 +352,7 @@ Prefixed, base62-encoded API keys with SHA-256 hashing for safe storage. Only th
 ### Issuing keys
 
 ```go
-import "github.com/krishna/api-security-sdk/apikey"
+import "github.com/KriaaCompany/api-security-sdk/apikey"
 
 store := apikey.NewMemoryStore()
 svc   := apikey.NewService(store)
@@ -403,7 +403,7 @@ Sliding-window counter rate limiter with standard `X-RateLimit-*` response heade
 ### Basic usage
 
 ```go
-import "github.com/krishna/api-security-sdk/ratelimit"
+import "github.com/KriaaCompany/api-security-sdk/ratelimit"
 
 store   := ratelimit.NewMemoryStore()
 limiter := ratelimit.New(store, ratelimit.Config{
@@ -419,7 +419,7 @@ Rate-limit by IP (default), authenticated subject, or URL path:
 
 ```go
 // Per authenticated user (falls back to IP for anonymous requests).
-import authmw "github.com/krishna/api-security-sdk/auth/middleware"
+import authmw "github.com/KriaaCompany/api-security-sdk/auth/middleware"
 
 limiter := ratelimit.New(store, ratelimit.Config{
     Limit:  1000,
@@ -451,7 +451,7 @@ A single middleware call that sets modern security response headers. Apply it on
 ### Strict preset (recommended)
 
 ```go
-import "github.com/krishna/api-security-sdk/secureheaders"
+import "github.com/KriaaCompany/api-security-sdk/secureheaders"
 
 mux.Handle("/", secureheaders.Strict()(handler))
 ```
@@ -486,7 +486,7 @@ mux.Handle("/", secureheaders.New(secureheaders.Config{
 ### Password hashing (Argon2id)
 
 ```go
-import "github.com/krishna/api-security-sdk/crypto"
+import "github.com/KriaaCompany/api-security-sdk/crypto"
 
 // Hash a password. The returned string is self-contained (PHC format)
 // and safe to store directly in a database column.
