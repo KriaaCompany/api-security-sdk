@@ -1,12 +1,16 @@
 # api-security-sdk
 
-A secure, fast, and easy-to-integrate Go SDK for authentication and authorisation. Drop it into any Go project to get JWT handling, Role-Based Access Control (RBAC), Attribute-Based Access Control (ABAC), and cryptographic utilities — with zero boilerplate.
+A secure, fast, and easy-to-integrate Go SDK for authentication and authorisation. Drop it into any Go project to get JWT handling, Role-Based Access Control (RBAC), Attribute-Based Access Control (ABAC), TOTP two-factor auth, API key management, rate limiting, and cryptographic utilities — with zero boilerplate.
 
 ## Features
 
 - **JWT** — sign, verify, refresh, and revoke tokens with HMAC, RSA, or ECDSA
 - **RBAC** — hierarchical roles with wildcard permissions and net/http middleware
 - **ABAC** — composable policy conditions evaluated in priority order, deny-by-default
+- **TOTP / 2FA** — RFC 6238 time-based one-time passwords, backup codes, QR provisioning URIs
+- **API keys** — prefixed key generation, SHA-256 hashing, expiry, revocation, HTTP middleware
+- **Rate limiting** — sliding-window counter with per-IP / per-subject / per-route key functions
+- **Secure headers** — one-line HSTS, CSP, COEP/COOP/CORP, X-Frame-Options, and more
 - **Crypto** — Argon2id password hashing, secure random tokens, RSA/ECDSA key helpers
 - **Framework-agnostic** — standard `net/http` middleware; adapts to any router
 - **Minimal dependencies** — only `golang-jwt/jwt/v5` and `golang.org/x/crypto`
@@ -25,6 +29,10 @@ go get github.com/krishna/api-security-sdk
 | `github.com/krishna/api-security-sdk/auth/middleware` | HTTP auth middleware & context helpers |
 | `github.com/krishna/api-security-sdk/rbac` | Role-Based Access Control |
 | `github.com/krishna/api-security-sdk/abac` | Attribute-Based Access Control |
+| `github.com/krishna/api-security-sdk/otp` | TOTP two-factor authentication |
+| `github.com/krishna/api-security-sdk/apikey` | API key generation & authentication |
+| `github.com/krishna/api-security-sdk/ratelimit` | Sliding-window rate limiting |
+| `github.com/krishna/api-security-sdk/secureheaders` | Security response headers middleware |
 | `github.com/krishna/api-security-sdk/crypto` | Password hashing, tokens, key generation |
 
 ---
@@ -293,6 +301,186 @@ mux.Handle("/documents/",
 
 ---
 
+## TOTP / Two-Factor Authentication
+
+RFC 6238 time-based one-time passwords, compatible with Google Authenticator, Authy, 1Password, and any standard authenticator app. Implemented using the Go standard library only — no extra dependencies.
+
+### Setup flow
+
+```go
+import "github.com/krishna/api-security-sdk/otp"
+
+// 1. Generate a secret during account setup. Store it encrypted per user.
+secret, err := otp.NewSecret()
+
+// 2. Build a provisioning URI and render it as a QR code for the user to scan.
+uri := otp.ProvisioningURI("alice@example.com", "MyApp", secret)
+// Pass uri to any QR code library, e.g. github.com/skip2/go-qrcode
+
+// 3. On every login, verify the code from the user's authenticator app.
+ok, err := otp.Verify(secret, userSuppliedCode)
+if err != nil || !ok {
+    // reject login
+}
+```
+
+### Backup codes
+
+```go
+// Generate 10 single-use backup codes (show once, store hashed).
+codes, err := otp.GenerateBackupCodes(10)
+// codes[i] looks like "A3K9M-X7P2Q"
+// Hash each code with crypto.HashPassword before storing.
+```
+
+### Custom parameters
+
+```go
+ok, err := otp.VerifyWithOptions(secret, code, otp.VerifyOptions{
+    Digits: 8,           // 8-digit codes
+    Period: 60,          // 60-second window
+    Skew:   2,           // allow ±2 windows of clock drift
+})
+```
+
+---
+
+## API Keys
+
+Prefixed, base62-encoded API keys with SHA-256 hashing for safe storage. Only the hash is ever persisted; a leaked database cannot expose plaintext keys.
+
+### Issuing keys
+
+```go
+import "github.com/krishna/api-security-sdk/apikey"
+
+store := apikey.NewMemoryStore()
+svc   := apikey.NewService(store)
+
+issued, err := svc.Issue(apikey.IssueOptions{
+    Prefix:    "sk_live",           // key looks like "sk_live_A3Bx…"
+    Name:      "ci-pipeline",
+    Subject:   "user-123",          // link key to a user/service
+    ExpiresIn: 90 * 24 * time.Hour, // optional TTL
+})
+fmt.Println(issued.Plaintext) // show to user ONCE — never stored
+```
+
+### Verifying keys
+
+```go
+key, err := svc.Verify(plaintextKeyFromRequest)
+// err is apikey.ErrInvalidKey, ErrRevokedKey, or ErrExpiredKey on failure.
+fmt.Println(key.Subject) // "user-123"
+```
+
+### Revoking keys
+
+```go
+svc.Revoke(key.ID)
+```
+
+### HTTP middleware
+
+The middleware reads the key from `X-API-Key` or `Authorization: Bearer <key>`.
+
+```go
+mux.Handle("/api/",
+    apikey.Middleware(svc)(handler),
+)
+
+// Retrieve the verified key record inside a handler:
+k := apikey.KeyFrom(r.Context())   // *apikey.Key
+s := apikey.SubjectFrom(r.Context()) // string
+```
+
+---
+
+## Rate Limiting
+
+Sliding-window counter rate limiter with standard `X-RateLimit-*` response headers and a `429 Too Many Requests` response on breach.
+
+### Basic usage
+
+```go
+import "github.com/krishna/api-security-sdk/ratelimit"
+
+store   := ratelimit.NewMemoryStore()
+limiter := ratelimit.New(store, ratelimit.Config{
+    Limit:  100,
+    Window: time.Minute,
+})
+mux.Handle("/api/", limiter(handler))
+```
+
+### Key functions
+
+Rate-limit by IP (default), authenticated subject, or URL path:
+
+```go
+// Per authenticated user (falls back to IP for anonymous requests).
+import authmw "github.com/krishna/api-security-sdk/auth/middleware"
+
+limiter := ratelimit.New(store, ratelimit.Config{
+    Limit:  1000,
+    Window: time.Hour,
+    KeyFn:  ratelimit.BySubject(authmw.SubjectFrom),
+})
+
+// Per route (different limits without separate middleware instances).
+ratelimit.New(store, ratelimit.Config{Limit: 20, Window: time.Minute, KeyFn: ratelimit.ByRoute})
+```
+
+### Response headers
+
+Every response receives:
+
+| Header | Value |
+|---|---|
+| `X-RateLimit-Limit` | Configured request limit |
+| `X-RateLimit-Remaining` | Requests remaining in current window |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets |
+| `Retry-After` | Seconds to wait (only on 429 responses) |
+
+---
+
+## Secure Headers
+
+A single middleware call that sets modern security response headers. Apply it once at the outermost layer of your stack.
+
+### Strict preset (recommended)
+
+```go
+import "github.com/krishna/api-security-sdk/secureheaders"
+
+mux.Handle("/", secureheaders.Strict()(handler))
+```
+
+`Strict()` sets HSTS (1 year, includeSubDomains), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, COEP/COOP/CORP, and removes the `Server` and `X-Powered-By` headers.
+
+### Custom configuration
+
+```go
+mux.Handle("/", secureheaders.New(secureheaders.Config{
+    HSTS: secureheaders.HSTSConfig{
+        MaxAge:            365 * 24 * time.Hour,
+        IncludeSubDomains: true,
+        Preload:           true, // only after submitting to hstspreload.org
+    },
+    ContentTypeOpts:   true,
+    FrameOptions:      "SAMEORIGIN",
+    CSP:               "default-src 'self'; img-src *",
+    ReferrerPolicy:    "strict-origin-when-cross-origin",
+    PermissionsPolicy: "geolocation=(), microphone=()",
+    COEP:              "require-corp",
+    COOP:              "same-origin",
+    CORP:              "same-origin",
+    RemoveServerHeader: true,
+})(handler))
+```
+
+---
+
 ## Crypto
 
 ### Password hashing (Argon2id)
@@ -373,6 +561,30 @@ priv, err := crypto.ParseECDSAPrivateKeyPEM(privPEM)
 | `Require(ev, action, resourceFn, subjectFn)` | 403 unless ABAC evaluator allows the request. |
 | `SubjectFromClaims` | Pre-built `subjectFn` that maps JWT claims to `Attributes`. |
 
+### `ratelimit`
+
+| Function | Description |
+|---|---|
+| `New(store, cfg)` | Sliding-window rate limiter; 429 on breach with `X-RateLimit-*` headers. |
+| `ByIP(r)` | Default `KeyFn` — rate-limits per client IP. |
+| `BySubject(subjectFn)` | Rate-limits per authenticated subject, falls back to IP. |
+| `ByRoute(r)` | Rate-limits per IP + URL path combination. |
+
+### `apikey`
+
+| Function | Description |
+|---|---|
+| `Middleware(svc, opts...)` | 401 unless a valid API key is present in `X-API-Key` or `Authorization`. |
+| `KeyFrom(ctx)` | Retrieve `*apikey.Key` from a request context. |
+| `SubjectFrom(ctx)` | Retrieve the key's subject string from a request context. |
+
+### `secureheaders`
+
+| Function | Description |
+|---|---|
+| `Strict()` | Apply opinionated production-grade security headers. |
+| `New(cfg)` | Apply a custom header configuration. |
+
 ---
 
 ## Extending with your own stores
@@ -392,7 +604,7 @@ func (s *MyRBACStore) RemoveRole(name string) error                      { ... }
 enforcer := rbac.New(&MyRBACStore{db: db})
 ```
 
-The same pattern applies to `abac.PolicyStore` and `jwt.Blacklist`.
+The same pattern applies to `abac.PolicyStore`, `jwt.Blacklist`, `apikey.Store`, and `ratelimit.Store`.
 
 ---
 
@@ -415,3 +627,7 @@ go run ./examples/advanced
 - **Argon2id defaults** follow OWASP recommendations (64 MiB memory, 3 iterations, parallelism 2). Tune upward for sensitive data.
 - The `MemoryBlacklist` and `MemoryStore` types are suitable for single-process deployments and testing. Use a shared store (Redis, database) in horizontally-scaled environments.
 - ABAC is **deny-by-default** — requests that match no policy are rejected. Call `abac.WithDefaultAllow()` only when you have an explicit deny-all catch-all policy.
+- **API key hashes** use SHA-256, which is appropriate here because the keys are long, high-entropy random strings. Do not use SHA-256 to hash passwords — use `crypto.HashPassword` (Argon2id) for that.
+- **TOTP secrets** must be stored encrypted at rest. Use your KMS or a field-level encryption library; do not store them as plaintext.
+- **Rate limiting** with `MemoryStore` is per-process. In a multi-instance deployment, use a Redis-backed `ratelimit.Store` so limits are enforced across the fleet.
+- **Secure headers** — do not set `Preload: true` on HSTS unless you have submitted your domain at [hstspreload.org](https://hstspreload.org) and are prepared to serve all traffic over HTTPS permanently.
