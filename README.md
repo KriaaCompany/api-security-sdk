@@ -1,6 +1,6 @@
 # api-security-sdk
 
-A secure, fast, and easy-to-integrate Go SDK for authentication and authorisation. Drop it into any Go project to get JWT handling, Role-Based Access Control (RBAC), Attribute-Based Access Control (ABAC), TOTP two-factor auth, API key management, rate limiting, and cryptographic utilities — with zero boilerplate.
+A secure, fast, and easy-to-integrate Go SDK for authentication and authorisation. Drop it into any Go project to get JWT handling, RBAC, ABAC, TOTP two-factor auth, API key management, rate limiting, CORS, audit logging, request signing, password policy enforcement, and cryptographic utilities — with zero boilerplate.
 
 ## Features
 
@@ -10,6 +10,10 @@ A secure, fast, and easy-to-integrate Go SDK for authentication and authorisatio
 - **TOTP / 2FA** — RFC 6238 time-based one-time passwords, backup codes, QR provisioning URIs
 - **API keys** — prefixed key generation, SHA-256 hashing, expiry, revocation, HTTP middleware
 - **Rate limiting** — sliding-window counter with per-IP / per-subject / per-route key functions
+- **CORS** — origin allowlisting, preflight handling, credentials support, correct Vary headers
+- **Audit logging** — typed security events, JSON sink, multi-logger, HTTP middleware auto-logging
+- **Request signing** — HMAC-SHA256 webhook signing/verification with replay protection
+- **Password policy** — length, complexity, entropy, common-password blocklist; OWASP preset
 - **Secure headers** — one-line HSTS, CSP, COEP/COOP/CORP, X-Frame-Options, and more
 - **Crypto** — Argon2id password hashing, secure random tokens, RSA/ECDSA key helpers
 - **Framework-agnostic** — standard `net/http` middleware; adapts to any router
@@ -32,6 +36,10 @@ go get github.com/KriaaCompany/api-security-sdk
 | `github.com/KriaaCompany/api-security-sdk/otp` | TOTP two-factor authentication |
 | `github.com/KriaaCompany/api-security-sdk/apikey` | API key generation & authentication |
 | `github.com/KriaaCompany/api-security-sdk/ratelimit` | Sliding-window rate limiting |
+| `github.com/KriaaCompany/api-security-sdk/cors` | CORS middleware |
+| `github.com/KriaaCompany/api-security-sdk/audit` | Security audit event logging |
+| `github.com/KriaaCompany/api-security-sdk/reqsign` | HMAC-SHA256 request signing |
+| `github.com/KriaaCompany/api-security-sdk/passwdpolicy` | Password policy enforcement |
 | `github.com/KriaaCompany/api-security-sdk/secureheaders` | Security response headers middleware |
 | `github.com/KriaaCompany/api-security-sdk/crypto` | Password hashing, tokens, key generation |
 
@@ -585,6 +593,41 @@ priv, err := crypto.ParseECDSAPrivateKeyPEM(privPEM)
 | `Strict()` | Apply opinionated production-grade security headers. |
 | `New(cfg)` | Apply a custom header configuration. |
 
+### `cors`
+
+| Function | Description |
+|---|---|
+| `AllowAll()` | Allow all origins — development only. |
+| `New(cfg)` | Allow-list based CORS with preflight handling and Vary headers. |
+
+### `audit`
+
+| Function | Description |
+|---|---|
+| `Middleware(logger, autoLog?)` | Injects logger into context; optionally auto-logs every request. |
+| `FromContext(ctx)` | Retrieve the `Logger` from a request context. |
+| `Log(ctx, event)` | Shorthand for `FromContext(ctx).Log(ctx, event)`. |
+| `Eventf(type, subject, result)` | Fluent `EventBuilder` for constructing events. |
+
+### `reqsign`
+
+| Function | Description |
+|---|---|
+| `Middleware(secret, opts?)` | Verify HMAC-SHA256 signature on inbound requests; 401 on failure. |
+| `NewSigningTransport(secret, base)` | `http.RoundTripper` that signs every outbound request. |
+| `Sign(secret, body, time)` | Compute a signature manually. |
+| `Verify(secret, body, time, sig)` | Verify a signature with constant-time comparison. |
+
+### `passwdpolicy`
+
+| Function | Description |
+|---|---|
+| `OWASP()` | Returns the OWASP-recommended policy preset. |
+| `Strict()` | Returns a high-security policy preset. |
+| `Policy.Validate(password)` | Returns a slice of `Violation` (empty = valid). |
+| `Policy.IsValid(password)` | Returns `true` when the password passes all rules. |
+| `EstimateStrength(password)` | Returns a qualitative `Strength` rating for UI meters. |
+
 ---
 
 ## Extending with your own stores
@@ -605,6 +648,195 @@ enforcer := rbac.New(&MyRBACStore{db: db})
 ```
 
 The same pattern applies to `abac.PolicyStore`, `jwt.Blacklist`, `apikey.Store`, and `ratelimit.Store`.
+
+---
+
+## CORS
+
+Controls which browser origins are allowed to make cross-origin requests to your API.
+
+```go
+import "github.com/KriaaCompany/api-security-sdk/cors"
+
+// Development — allow everything (never use in production).
+mux.Handle("/", cors.AllowAll()(handler))
+
+// Production — explicit allowlist.
+mux.Handle("/", cors.New(cors.Config{
+    AllowedOrigins:   []string{"https://app.example.com", "https://admin.example.com"},
+    AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE"},
+    AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-Id"},
+    ExposedHeaders:   []string{"X-RateLimit-Remaining"},
+    AllowCredentials: true,
+    MaxAge:           12 * time.Hour,
+})(handler))
+```
+
+CORS preflight (`OPTIONS`) requests are handled automatically and respond with `204 No Content`. The `Vary: Origin` header is always set so CDN caches do not serve one origin's response to another.
+
+---
+
+## Audit Logging
+
+Structured, typed security event logging for compliance (SOC 2, ISO 27001, GDPR).
+
+### Quick log
+
+```go
+import "github.com/KriaaCompany/api-security-sdk/audit"
+
+logger := audit.NewJSONLogger(os.Stdout)
+
+// Fluent builder.
+audit.Eventf(audit.EventLogin, "user-123", audit.ResultAllow).
+    WithIP("1.2.3.4").
+    WithMeta("method", "totp").
+    Log(ctx)
+
+// Direct struct.
+logger.Log(ctx, audit.Event{
+    Type:    audit.EventAccessDenied,
+    Subject: "user-456",
+    Resource: "posts/99",
+    Action:  "delete",
+    Result:  audit.ResultDeny,
+})
+```
+
+### HTTP middleware
+
+```go
+// Inject logger into every request context (log manually inside handlers).
+mux.Handle("/", audit.Middleware(logger)(handler))
+
+// Auto-log every request (status ≥ 400 → access_denied).
+mux.Handle("/", audit.Middleware(logger, true)(handler))
+
+// Inside a handler, retrieve the logger from context.
+audit.Log(r.Context(), audit.Event{Type: audit.EventTokenRevoked, Subject: id})
+```
+
+### Event types
+
+| Constant | Description |
+|---|---|
+| `EventLogin` / `EventLoginFailed` | Authentication success / failure |
+| `EventLogout` | Session termination |
+| `EventMFASuccess` / `EventMFAFailed` | 2FA verification |
+| `EventTokenIssued` / `EventTokenRevoked` / `EventTokenInvalid` | JWT lifecycle |
+| `EventAPIKeyIssued` / `EventAPIKeyUsed` / `EventAPIKeyRevoked` | API key lifecycle |
+| `EventAccessGranted` / `EventAccessDenied` | Authorisation decisions |
+| `EventRateLimited` | Rate limit breach |
+| `EventPasswordChanged` / `EventAccountLocked` | Account management |
+
+### Multiple sinks
+
+```go
+logger := audit.NewMultiLogger(
+    audit.NewJSONLogger(os.Stdout),  // local stdout
+    myRemoteSink,                     // custom audit.Logger implementation
+)
+```
+
+---
+
+## Request Signing
+
+HMAC-SHA256 signing for webhooks and service-to-service calls. Uses the same scheme as Stripe, GitHub, and Twilio webhooks. Includes replay protection via a timestamp window.
+
+### Signing outbound requests
+
+```go
+import "github.com/KriaaCompany/api-security-sdk/reqsign"
+
+secret := []byte("shared-secret")
+client := &http.Client{
+    Transport: reqsign.NewSigningTransport(secret, nil),
+}
+// Every request is automatically signed with X-Signature and X-Timestamp.
+client.Post(webhookURL, "application/json", body)
+```
+
+### Verifying inbound requests (webhook receiver)
+
+```go
+mux.Handle("/webhook",
+    reqsign.Middleware(secret)(webhookHandler),
+)
+// Invalid signature or replayed requests → 401.
+```
+
+### Manual sign / verify
+
+```go
+sig := reqsign.Sign(secret, bodyBytes, time.Now())
+
+ok := reqsign.Verify(secret, bodyBytes, timestamp, sig) // constant-time
+```
+
+### Custom options
+
+```go
+reqsign.Middleware(secret, reqsign.VerifyOptions{
+    Header:          "X-Hub-Signature-256", // GitHub-compatible
+    TimestampHeader: "X-GitHub-Delivery",
+    ReplayWindow:    10 * time.Minute,
+})(handler)
+```
+
+---
+
+## Password Policy
+
+Validate passwords before hashing them. Catches weak, short, or common passwords early and returns structured violations suitable for API error responses.
+
+### Usage
+
+```go
+import "github.com/KriaaCompany/api-security-sdk/passwdpolicy"
+
+// OWASP recommended defaults (min 8 chars, entropy check, block common passwords).
+policy := passwdpolicy.OWASP()
+
+violations := policy.Validate(password)
+if len(violations) > 0 {
+    for _, v := range violations {
+        fmt.Println(v.Rule, v.Message)
+        // e.g. "min_length  must be at least 8 characters long"
+        // e.g. "common_password  this password is too common"
+    }
+}
+```
+
+### Presets
+
+```go
+passwdpolicy.OWASP()   // min 8 chars, entropy ≥ 28 bits, block common passwords
+passwdpolicy.Strict()  // min 12 chars, upper+lower+digit+special, entropy ≥ 50 bits
+```
+
+### Custom policy
+
+```go
+policy := passwdpolicy.Policy{
+    MinLength:      16,
+    MaxLength:      128,
+    RequireUpper:   true,
+    RequireLower:   true,
+    RequireDigit:   true,
+    RequireSpecial: true,
+    MinEntropy:     60,
+    DisallowCommon: true,
+    Blocklist:      []string{"CompanyName", "ProductName"},
+}
+```
+
+### Strength meter
+
+```go
+strength := passwdpolicy.EstimateStrength(password)
+fmt.Println(strength) // "very weak" | "weak" | "fair" | "strong" | "very strong"
+```
 
 ---
 
@@ -630,4 +862,7 @@ go run ./examples/advanced
 - **API key hashes** use SHA-256, which is appropriate here because the keys are long, high-entropy random strings. Do not use SHA-256 to hash passwords — use `crypto.HashPassword` (Argon2id) for that.
 - **TOTP secrets** must be stored encrypted at rest. Use your KMS or a field-level encryption library; do not store them as plaintext.
 - **Rate limiting** with `MemoryStore` is per-process. In a multi-instance deployment, use a Redis-backed `ratelimit.Store` so limits are enforced across the fleet.
+- **CORS** — never use `AllowAll()` in production. Always specify an explicit `AllowedOrigins` list. Do not combine `AllowCredentials: true` with a wildcard origin.
+- **Request signing** — protect your shared secret with the same care as a private key. Rotate it periodically and use separate secrets per integration.
+- **Audit logs** — treat audit log output as sensitive data. Route it to a write-once/append-only sink and restrict access. Never log full passwords or raw tokens.
 - **Secure headers** — do not set `Preload: true` on HSTS unless you have submitted your domain at [hstspreload.org](https://hstspreload.org) and are prepared to serve all traffic over HTTPS permanently.
