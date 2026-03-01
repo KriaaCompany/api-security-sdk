@@ -85,6 +85,26 @@ func Verify(secret, body []byte, timestamp time.Time, sig string) bool {
 	return hmac.Equal(sigBytes, expectedBytes)
 }
 
+// VerifyRaw checks an HMAC-SHA256 signature over the raw body only, with no
+// timestamp prefix. Use this for webhook providers that sign the body directly
+// without a timestamp (e.g. Didit). Replay protection (timestamp window check)
+// must be handled separately by the caller.
+//
+// Uses constant-time comparison to prevent timing attacks.
+//
+//	ts, _ := strconv.ParseInt(r.Header.Get("X-Webhook-Timestamp"), 10, 64)
+//	if math.Abs(float64(time.Now().Unix()-ts)) > 300 { /* reject */ }
+//	ok := reqsign.VerifyRaw([]byte(secret), body, r.Header.Get("X-Webhook-Signature"))
+func VerifyRaw(secret, body []byte, sig string) bool {
+	sigBytes, err := hex.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(body)
+	return hmac.Equal(mac.Sum(nil), sigBytes)
+}
+
 // ─── Middleware (inbound verification) ───────────────────────────────────────
 
 // VerifyOptions configures the inbound verification middleware.

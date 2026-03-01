@@ -34,7 +34,7 @@ type Service struct {
 }
 
 // New creates a JWT Service. At least one algorithm option (WithHMAC, WithRSA,
-// or WithECDSA) must be provided before calling Sign or Verify.
+// WithECDSA, or WithJWKS) must be provided before calling Sign or Verify.
 func New(opts ...Option) *Service {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -70,20 +70,26 @@ func (s *Service) Sign(claims Claims) (string, error) {
 // Verify parses and validates a JWT string, returning its claims on success.
 // Returns an error if the token is malformed, expired, signed with the wrong
 // algorithm, or present in the revocation blacklist.
+//
+// When WithJWKS was used, the external keyfunc is called to resolve the key.
+// Otherwise, the statically configured verifyKey is used.
 func (s *Service) Verify(tokenString string) (*Claims, error) {
-	if s.opts.signingMethod == nil {
+	if s.opts.keyFunc == nil && s.opts.signingMethod == nil {
 		return nil, ErrMissingAlgorithm
 	}
-	c := &standardClaims{}
-	token, err := gojwt.ParseWithClaims(
-		tokenString, c,
-		func(t *gojwt.Token) (any, error) {
+
+	keyfunc := s.opts.keyFunc
+	if keyfunc == nil {
+		keyfunc = func(t *gojwt.Token) (any, error) {
 			if t.Method.Alg() != s.opts.signingMethod.Alg() {
 				return nil, ErrInvalidSigningMethod
 			}
 			return s.opts.verifyKey, nil
-		},
-	)
+		}
+	}
+
+	c := &standardClaims{}
+	token, err := gojwt.ParseWithClaims(tokenString, c, keyfunc)
 	if err != nil {
 		return nil, mapJWTError(err)
 	}
