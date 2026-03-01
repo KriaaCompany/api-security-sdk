@@ -11,10 +11,10 @@ import (
 // DBLogger writes audit events to a SQL database table using database/sql.
 // It is compatible with any database driver (PostgreSQL, MySQL, SQLite, etc.).
 //
-// # Required schema
+// # Default schema
 //
-// Run this migration before using DBLogger. For PostgreSQL use JSONB for meta;
-// for MySQL/SQLite use TEXT.
+// Run this migration before using DBLogger with the default column layout.
+// For PostgreSQL use JSONB for meta; for MySQL/SQLite use TEXT.
 //
 //	CREATE TABLE audit_logs (
 //	    id         BIGSERIAL PRIMARY KEY,            -- BIGINT AUTO_INCREMENT for MySQL
@@ -35,6 +35,11 @@ import (
 //	CREATE INDEX audit_logs_subject_idx   ON audit_logs(subject);
 //	CREATE INDEX audit_logs_timestamp_idx ON audit_logs(timestamp);
 //
+// # Custom schema
+//
+// If your database has a different audit table layout, supply your own INSERT
+// statement and a mapper via WithCustomSchema — no migration needed.
+//
 // # Usage
 //
 //	db, _ := sql.Open("pgx", os.Getenv("DATABASE_URL"))
@@ -46,17 +51,68 @@ type DBLogger struct {
 	db    *sql.DB
 	table string
 	// insertSQL is pre-built at construction time.
-	insertSQL string
+	insertSQL    string
+	mapper       EventMapper // nil when using the default schema
+	customSchema bool        // true when WithCustomSchema was applied
 }
 
 // DBLoggerOption configures a DBLogger.
 type DBLoggerOption func(*DBLogger)
 
 // WithTableName sets the target table name. Default: "audit_logs".
+// This option is ignored when WithCustomSchema is set, because the table name
+// is embedded in the caller's INSERT statement.
 func WithTableName(name string) DBLoggerOption {
 	return func(l *DBLogger) {
+		if l.customSchema {
+			return // caller's SQL owns the table name; ignore
+		}
 		l.table = name
 		l.insertSQL = buildInsertSQL(name)
+	}
+}
+
+// EventMapper converts an audit.Event into the positional SQL parameters for
+// the caller's custom INSERT statement. The returned slice must have exactly as
+// many elements as there are placeholders in the INSERT statement.
+type EventMapper func(e Event) []any
+
+// WithCustomSchema replaces the default INSERT statement and column mapping
+// with the caller's own. Use this when your database has a different
+// audit_logs schema than the SDK's default.
+//
+// insertSQL must be a complete INSERT statement with positional placeholders
+// ($1, $2, … for PostgreSQL; ?, ?, … for MySQL/SQLite).
+// mapper must return a slice whose length matches the number of placeholders.
+//
+// When WithCustomSchema is set, WithTableName is ignored because the table
+// name is embedded in the caller-supplied SQL.
+//
+// Example (PostgreSQL, project-specific schema):
+//
+//	const insertSQL = `INSERT INTO audit_logs
+//	    (id, user_id, action, entity_type, entity_id, changes, ip_address, user_agent)
+//	    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+//
+//	mapper := func(e audit.Event) []any {
+//	    return []any{
+//	        e.ID,
+//	        e.Subject,            // user_id
+//	        e.Action,
+//	        e.Resource,           // entity_type
+//	        e.Meta["entity_id"],  // entity_id
+//	        metaToJSON(e.Meta),   // changes
+//	        e.IP,
+//	        e.UserAgent,
+//	    }
+//	}
+//
+//	logger := audit.NewDBLogger(db, audit.WithCustomSchema(insertSQL, mapper))
+func WithCustomSchema(insertSQL string, mapper EventMapper) DBLoggerOption {
+	return func(l *DBLogger) {
+		l.insertSQL = insertSQL
+		l.mapper = mapper
+		l.customSchema = true
 	}
 }
 
@@ -73,11 +129,26 @@ func NewDBLogger(db *sql.DB, opts ...DBLoggerOption) *DBLogger {
 
 // Log inserts the event into the database. It honours the context deadline/
 // cancellation so a slow database does not block the request indefinitely.
+//
+// When WithCustomSchema was used, Log delegates entirely to the caller's
+// INSERT statement and EventMapper. Otherwise the default 11-column schema
+// is used.
 func (l *DBLogger) Log(ctx context.Context, e Event) error {
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now().UTC()
 	}
 
+	// Custom schema path — caller owns the SQL and parameter mapping.
+	if l.mapper != nil {
+		args := l.mapper(e)
+		_, err := l.db.ExecContext(ctx, l.insertSQL, args...)
+		if err != nil {
+			return fmt.Errorf("audit: db insert failed: %w", err)
+		}
+		return nil
+	}
+
+	// Default schema path.
 	var metaJSON []byte
 	if len(e.Meta) > 0 {
 		var err error
@@ -108,6 +179,8 @@ func (l *DBLogger) Log(ctx context.Context, e Event) error {
 
 // Ping checks that the database is reachable and the audit_logs table exists.
 // Call this at startup to fail fast on misconfiguration.
+// Note: Ping uses the configured table name; it is not available when
+// WithCustomSchema is set (the table name is embedded in the caller's SQL).
 func (l *DBLogger) Ping(ctx context.Context) error {
 	if err := l.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("audit: database unreachable: %w", err)
